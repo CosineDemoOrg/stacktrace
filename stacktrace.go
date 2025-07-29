@@ -39,6 +39,13 @@ stacktraces, use something like:
 var CleanPath = cleanpath.RemoveGoPath
 
 /*
+LogHook, if non-nil, is invoked whenever a new stacktrace error is created.
+It receives the newly created error and its cause (which may be nil).
+The library itself never logs; applications can use this hook to observe error propagation and creation.
+*/
+var LogHook func(err error, cause error)
+
+/*
 NewError is a drop-in replacement for fmt.Errorf that includes line number
 information. The canonical call looks like this:
 
@@ -299,6 +306,9 @@ func createWithSkip(cause error, code ErrorCode, extraSkip int, msg string, vals
 	// Base skip is 2 (callers: NewError/Propagate -> create/createWithSkip)
 	pc, file, line, ok := runtime.Caller(2 + extraSkip)
 	if !ok {
+		if LogHook != nil {
+			LogHook(err, cause)
+		}
 		return err
 	}
 	if CleanPath != nil {
@@ -308,9 +318,16 @@ func createWithSkip(cause error, code ErrorCode, extraSkip int, msg string, vals
 
 	f := runtime.FuncForPC(pc)
 	if f == nil {
+		if LogHook != nil {
+			LogHook(err, cause)
+		}
 		return err
 	}
 	err.function = shortFuncName(f)
+
+	if LogHook != nil {
+		LogHook(err, cause)
+	}
 
 	return err
 }
