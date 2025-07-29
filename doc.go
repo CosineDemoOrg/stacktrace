@@ -30,6 +30,10 @@ A stacktrace produced by this package looks like this:
 	Caused by: Inverse tachyon pulse failed
 	 --- at github.com/palantir/shield/metaphysic/tachyon.go:72 (TryPulse) ---
 
+Applications can observe every error propagation and creation by setting the
+global stacktrace.LogHook variable. If set, LogHook is invoked with each new
+stacktrace error and its cause (if any).
+
 Note that stack traces are not designed to be user-visible. They can be valuable
 in a log file of a server application, but nobody wants to see one of them in
 CLI output or a web interface or a return value from library code.

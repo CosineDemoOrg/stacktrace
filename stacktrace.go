@@ -39,6 +39,13 @@ stacktraces, use something like:
 var CleanPath = cleanpath.RemoveGoPath
 
 /*
+LogHook, if non-nil, is invoked whenever a new stacktrace error is created.
+It receives the newly created error and its cause (which may be nil).
+The library itself never logs; applications can use this hook to observe error propagation and creation.
+*/
+var LogHook func(err error, cause error)
+
+/*
 NewError is a drop-in replacement for fmt.Errorf that includes line number
 information. The canonical call looks like this:
 
@@ -48,6 +55,18 @@ information. The canonical call looks like this:
 */
 func NewError(msg string, vals ...interface{}) error {
 	return create(nil, NoCode, msg, vals...)
+}
+
+/*
+NewErrorSkip is like NewError, but allows skipping additional stack frames.
+Use this in helpers/wrappers to record the caller's site as the error location.
+
+	someHelper := func(msg string) error {
+		return stacktrace.NewErrorSkip(1, msg)
+	}
+*/
+func NewErrorSkip(skip int, msg string, vals ...interface{}) error {
+	return createWithSkip(nil, NoCode, skip, msg, vals...)
 }
 
 /*
@@ -90,6 +109,19 @@ func Propagate(cause error, msg string, vals ...interface{}) error {
 }
 
 /*
+PropagateSkip is like Propagate, but allows skipping additional stack frames.
+Use this in helpers/wrappers to record the caller's site as the error location.
+
+If cause is nil, PropagateSkip returns nil.
+*/
+func PropagateSkip(cause error, skip int, msg string, vals ...interface{}) error {
+	if cause == nil {
+		return nil
+	}
+	return createWithSkip(cause, NoCode, skip, msg, vals...)
+}
+
+/*
 ErrorCode is a code that can be attached to an error as it is passed/propagated
 up the stack.
 
@@ -122,6 +154,13 @@ func NewErrorWithCode(code ErrorCode, msg string, vals ...interface{}) error {
 }
 
 /*
+NewErrorWithCodeSkip is like NewErrorWithCode, but allows skipping additional stack frames.
+*/
+func NewErrorWithCodeSkip(code ErrorCode, skip int, msg string, vals ...interface{}) error {
+	return createWithSkip(nil, code, skip, msg, vals...)
+}
+
+/*
 PropagateWithCode is similar to Propagate but also attaches an error code.
 
 	_, err := os.Stat(manifestPath)
@@ -135,6 +174,17 @@ func PropagateWithCode(cause error, code ErrorCode, msg string, vals ...interfac
 		return nil
 	}
 	return create(cause, code, msg, vals...)
+}
+
+/*
+PropagateWithCodeSkip is like PropagateWithCode, but allows skipping additional stack frames.
+If cause is nil, PropagateWithCodeSkip returns nil.
+*/
+func PropagateWithCodeSkip(cause error, code ErrorCode, skip int, msg string, vals ...interface{}) error {
+	if cause == nil {
+		return nil
+	}
+	return createWithSkip(cause, code, skip, msg, vals...)
 }
 
 /*
@@ -185,7 +235,63 @@ type stacktrace struct {
 	line     int
 }
 
-func create(cause error, code ErrorCode, msg string, vals ...interface{}) error {
+/*
+ErrorBuilder provides a convenient way to construct errors with custom code and skip values.
+Typical use:
+
+	builder := stacktrace.NewErrorBuilder().WithCode(EcodeBadInput).WithSkip(1)
+	err := builder.New("bad input: %v", arg)
+*/
+type ErrorBuilder struct {
+	code ErrorCode
+	skip int
+}
+
+/*
+NewErrorBuilder returns a new ErrorBuilder with default code NoCode and skip 2.
+This default skip is suitable for builder.Propagate/helper wrappers.
+*/
+func NewErrorBuilder() *ErrorBuilder {
+	return &ErrorBuilder{code: NoCode, skip: 2}
+}
+
+/*
+WithCode sets the error code for the builder.
+*/
+func (b *ErrorBuilder) WithCode(code ErrorCode) *ErrorBuilder {
+	b.code = code
+	return b
+}
+
+/*
+WithSkip sets the skip value for the builder.
+*/
+func (b *ErrorBuilder) WithSkip(skip int) *ErrorBuilder {
+	b.skip = skip
+	return b
+}
+
+/*
+New creates a new error using the builder's code and skip values.
+*/
+func (b *ErrorBuilder) New(msg string, vals ...interface{}) error {
+	return createWithSkip(nil, b.code, b.skip, msg, vals...)
+}
+
+/*
+Propagate creates a new propagated error (if cause is not nil) with builder's code and skip.
+If cause is nil, Propagate returns nil.
+*/
+func (b *ErrorBuilder) Propagate(cause error, msg string, vals ...interface{}) error {
+	if cause == nil {
+		return nil
+	}
+	return createWithSkip(cause, b.code, b.skip, msg, vals...)
+}
+
+// createWithSkip is like create, but allows skipping additional stack frames.
+// extraSkip is added to the base skip count (2) when calling runtime.Caller.
+func createWithSkip(cause error, code ErrorCode, extraSkip int, msg string, vals ...interface{}) error {
 	// If no error code specified, inherit error code from the cause.
 	if code == NoCode {
 		code = GetCode(cause)
@@ -197,9 +303,12 @@ func create(cause error, code ErrorCode, msg string, vals ...interface{}) error 
 		code:    code,
 	}
 
-	// Caller of create is NewError or Propagate, so user's code is 2 up.
-	pc, file, line, ok := runtime.Caller(2)
+	// Base skip is 2 (callers: NewError/Propagate -> create/createWithSkip)
+	pc, file, line, ok := runtime.Caller(2 + extraSkip)
 	if !ok {
+		if LogHook != nil {
+			LogHook(err, cause)
+		}
 		return err
 	}
 	if CleanPath != nil {
@@ -209,11 +318,24 @@ func create(cause error, code ErrorCode, msg string, vals ...interface{}) error 
 
 	f := runtime.FuncForPC(pc)
 	if f == nil {
+		if LogHook != nil {
+			LogHook(err, cause)
+		}
 		return err
 	}
 	err.function = shortFuncName(f)
 
+	if LogHook != nil {
+		LogHook(err, cause)
+	}
+
 	return err
+}
+
+// create is a thin wrapper around createWithSkip which uses extraSkip==0.
+// All legacy APIs use this so behavior is preserved.
+func create(cause error, code ErrorCode, msg string, vals ...interface{}) error {
+	return createWithSkip(cause, code, 0, msg, vals...)
 }
 
 /* "FuncName" or "Receiver.MethodName" */
